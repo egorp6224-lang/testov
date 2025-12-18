@@ -1,0 +1,24 @@
+# 1. Самый простой wordlist
+cd ~
+python3 -c "
+with open('quick_list.txt', 'w') as f:
+    # Для сети kv216
+    for i in ['kv216', 'KV216', 'Kv216']:
+        f.write(f'{i}\\n')
+        for num in ['', '123', '1234', '123456', '12345678', '2024', '2023']:
+            f.write(f'{i}{num}\\n')
+            f.write(f'{num}{i}\\n')
+    
+    # Общие пароли
+    for pwd in ['password', 'admin', 'lazerpiu', 'piulazer', 'wifi1234']:
+        f.write(f'{pwd}\\n')
+    
+    # Числа
+    for i in range(10000000, 10010000):
+        f.write(f'{i}\\n')
+print('Создан quick_list.txt')
+"
+
+# 2. Проверяем
+wc -l ~/quick_list.txt
+head -20 ~/quick_list.txt
